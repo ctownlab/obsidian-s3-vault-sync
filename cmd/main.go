@@ -94,6 +94,7 @@ var runCmd = &cobra.Command{
 		bucket, _ := cmd.Flags().GetString("bucket")
 		vaultPath, _ := cmd.Flags().GetString("vault-path")
 		createTar, _ := cmd.Flags().GetBool("tar")
+		deleteLocal, _ := cmd.Flags().GetBool("delete")
 
 		// Create context with 30 second timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -148,7 +149,13 @@ var runCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		fmt.Printf("Found %d objects to download\n", len(listResp.Contents))
+		fmt.Printf("Found %d objects in S3\n", len(listResp.Contents))
+
+		// Track sync statistics
+		var downloaded, skipped, failed int
+
+		// Track all S3 files (relative paths) for deletion check
+		s3Files := make(map[string]bool)
 
 		// Download each object
 		for _, obj := range listResp.Contents {
@@ -161,9 +168,32 @@ var runCmd = &cobra.Command{
 			relPath := strings.TrimPrefix(*obj.Key, vaultPath)
 			localPath := filepath.Join(localDir, relPath)
 
+			// Track this S3 file for deletion check later
+			s3Files[relPath] = true
+
+			// Check if local file exists and compare
+			needsDownload := true
+			if localInfo, err := os.Stat(localPath); err == nil {
+				// File exists, compare size and modification time
+				localSize := localInfo.Size()
+				s3Size := *obj.Size
+				s3ModTime := *obj.LastModified
+
+				if localSize == s3Size && !s3ModTime.After(localInfo.ModTime()) {
+					// File is same size and not newer in S3, skip
+					needsDownload = false
+					skipped++
+				}
+			}
+
+			if !needsDownload {
+				continue
+			}
+
 			// Create parent directories if needed
 			if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to create directory for %s: %v\n", localPath, err)
+				failed++
 				continue
 			}
 
@@ -175,6 +205,7 @@ var runCmd = &cobra.Command{
 			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to download %s: %v\n", *obj.Key, err)
+				failed++
 				continue
 			}
 
@@ -183,6 +214,7 @@ var runCmd = &cobra.Command{
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to create file %s: %v\n", localPath, err)
 				result.Body.Close()
+				failed++
 				continue
 			}
 
@@ -193,11 +225,66 @@ var runCmd = &cobra.Command{
 
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to write file %s: %v\n", localPath, err)
+				failed++
 				continue
+			}
+
+			// Update modification time to match S3
+			if obj.LastModified != nil {
+				os.Chtimes(localPath, *obj.LastModified, *obj.LastModified)
+			}
+
+			downloaded++
+		}
+
+		// Delete local files not in S3 if --delete flag is set
+		var deleted int
+		if deleteLocal {
+			fmt.Println("\nChecking for files to delete...")
+			err := filepath.Walk(localDir, func(path string, info os.FileInfo, err error) error {
+				if err != nil {
+					return err
+				}
+
+				// Skip directories
+				if info.IsDir() {
+					return nil
+				}
+
+				// Get relative path from local directory
+				relPath, err := filepath.Rel(localDir, path)
+				if err != nil {
+					return err
+				}
+
+				// Check if this file exists in S3
+				if !s3Files[relPath] {
+					fmt.Printf("Deleting %s (not in S3)\n", path)
+					if err := os.Remove(path); err != nil {
+						fmt.Fprintf(os.Stderr, "Failed to delete %s: %v\n", path, err)
+						return nil
+					}
+					deleted++
+				}
+
+				return nil
+			})
+
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error during deletion walk: %v\n", err)
 			}
 		}
 
-		fmt.Printf("✓ Vault sync completed successfully to %s\n", localDir)
+		// Print sync statistics
+		fmt.Printf("\n✓ Vault sync completed successfully to %s\n", localDir)
+		fmt.Printf("  Downloaded: %d files\n", downloaded)
+		fmt.Printf("  Skipped (up-to-date): %d files\n", skipped)
+		if deleted > 0 {
+			fmt.Printf("  Deleted: %d files\n", deleted)
+		}
+		if failed > 0 {
+			fmt.Printf("  Failed: %d files\n", failed)
+		}
 
 		// Create tarball if requested
 		if createTar {
@@ -232,6 +319,7 @@ func init() {
 	runCmd.Flags().StringP("bucket", "b", "", "AWS S3 bucket fecth vault from")
 	runCmd.Flags().StringP("vault-path", "v", "", "Path to the Obsidian vault in the S3 bucket")
 	runCmd.Flags().BoolP("tar", "t", false, "Create a tar.gz backup of the vault with auto-generated filename")
+	runCmd.Flags().BoolP("delete", "d", false, "Delete local files that don't exist in S3")
 
 	// Mark required flags
 	runCmd.MarkFlagRequired("bucket")
