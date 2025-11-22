@@ -1,0 +1,13 @@
+views:
+  - type: table
+    name: Table
+    filters:
+      and:
+        - file.path.startsWith("Permanent")
+        - '!file.name.contains("Map of Content")'
+    order:
+      - file.name
+      - file.ctime
+      - file.mtime
+    columnSize:
+      file.ctime: 205
