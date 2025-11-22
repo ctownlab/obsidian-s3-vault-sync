@@ -1,11 +1,8 @@
 package main
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/ctownlab/obsidian-s3-vault-sync/internal/s3sync"
+	"github.com/ctownlab/obsidian-s3-vault-sync/internal/tar"
 	"github.com/spf13/cobra"
 )
 
@@ -21,64 +20,6 @@ var rootCmd = &cobra.Command{
 	Use:   "vault-sync",
 	Short: "Obsidian S3 Vault Sync",
 	Long:  `A CLI tool to sync Obsidian vaults from S3 locally and manage tar backups.`,
-}
-
-// createTarball creates a tar.gz archive of the specified directory
-func createTarball(sourceDir, targetPath string) error {
-	// Create the tar.gz file
-	tarFile, err := os.Create(targetPath)
-	if err != nil {
-		return fmt.Errorf("failed to create tar file: %w", err)
-	}
-	defer tarFile.Close()
-
-	// Create gzip writer
-	gzipWriter := gzip.NewWriter(tarFile)
-	defer gzipWriter.Close()
-
-	// Create tar writer
-	tarWriter := tar.NewWriter(gzipWriter)
-	defer tarWriter.Close()
-
-	// Walk through the directory
-	return filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		// Create tar header
-		header, err := tar.FileInfoHeader(info, "")
-		if err != nil {
-			return fmt.Errorf("failed to create tar header: %w", err)
-		}
-
-		// Update header name to be relative to source directory
-		relPath, err := filepath.Rel(sourceDir, path)
-		if err != nil {
-			return fmt.Errorf("failed to get relative path: %w", err)
-		}
-		header.Name = relPath
-
-		// Write header
-		if err := tarWriter.WriteHeader(header); err != nil {
-			return fmt.Errorf("failed to write tar header: %w", err)
-		}
-
-		// If it's a file (not a directory), write its contents
-		if !info.IsDir() {
-			file, err := os.Open(path)
-			if err != nil {
-				return fmt.Errorf("failed to open file: %w", err)
-			}
-			defer file.Close()
-
-			if _, err := io.Copy(tarWriter, file); err != nil {
-				return fmt.Errorf("failed to write file to tar: %w", err)
-			}
-		}
-
-		return nil
-	})
 }
 
 var runCmd = &cobra.Command{
@@ -95,6 +36,8 @@ var runCmd = &cobra.Command{
 		vaultPath, _ := cmd.Flags().GetString("vault-path")
 		createTar, _ := cmd.Flags().GetBool("tar")
 		deleteLocal, _ := cmd.Flags().GetBool("delete")
+		tarDir, _ := cmd.Flags().GetString("tar-dir")
+		tarKeep, _ := cmd.Flags().GetInt("tar-keep")
 
 		// Create context with 30 second timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -139,173 +82,38 @@ var runCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		// List objects in the S3 bucket
-		listResp, err := s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-			Bucket: &bucket,
-			Prefix: &vaultPath,
-		})
+		// Sync vault from S3
+		stats, err := s3sync.SyncVaultFromS3(ctx, s3Client, bucket, vaultPath, localDir, deleteLocal)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to list objects: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Failed to sync vault: %v\n", err)
 			os.Exit(1)
-		}
-
-		fmt.Printf("Found %d objects in S3\n", len(listResp.Contents))
-
-		// Track sync statistics
-		var downloaded, skipped, failed int
-
-		// Track all S3 files (relative paths) for deletion check
-		s3Files := make(map[string]bool)
-
-		// Download each object
-		for _, obj := range listResp.Contents {
-			// Skip if it's a directory marker
-			if strings.HasSuffix(*obj.Key, "/") {
-				continue
-			}
-
-			// Get relative path by removing the vault path prefix
-			relPath := strings.TrimPrefix(*obj.Key, vaultPath)
-			localPath := filepath.Join(localDir, relPath)
-
-			// Track this S3 file for deletion check later
-			s3Files[relPath] = true
-
-			// Check if local file exists and compare
-			needsDownload := true
-			if localInfo, err := os.Stat(localPath); err == nil {
-				// File exists, compare size and modification time
-				localSize := localInfo.Size()
-				s3Size := *obj.Size
-				s3ModTime := *obj.LastModified
-
-				if localSize == s3Size && !s3ModTime.After(localInfo.ModTime()) {
-					// File is same size and not newer in S3, skip
-					needsDownload = false
-					skipped++
-				}
-			}
-
-			if !needsDownload {
-				continue
-			}
-
-			// Create parent directories if needed
-			if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to create directory for %s: %v\n", localPath, err)
-				failed++
-				continue
-			}
-
-			// Download the file
-			fmt.Printf("Downloading %s -> %s\n", *obj.Key, localPath)
-			result, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
-				Bucket: &bucket,
-				Key:    obj.Key,
-			})
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to download %s: %v\n", *obj.Key, err)
-				failed++
-				continue
-			}
-
-			// Create local file
-			file, err := os.Create(localPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to create file %s: %v\n", localPath, err)
-				result.Body.Close()
-				failed++
-				continue
-			}
-
-			// Copy S3 object to local file
-			_, err = io.Copy(file, result.Body)
-			result.Body.Close()
-			file.Close()
-
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to write file %s: %v\n", localPath, err)
-				failed++
-				continue
-			}
-
-			// Update modification time to match S3
-			if obj.LastModified != nil {
-				os.Chtimes(localPath, *obj.LastModified, *obj.LastModified)
-			}
-
-			downloaded++
-		}
-
-		// Delete local files not in S3 if --delete flag is set
-		var deleted int
-		if deleteLocal {
-			fmt.Println("\nChecking for files to delete...")
-			err := filepath.Walk(localDir, func(path string, info os.FileInfo, err error) error {
-				if err != nil {
-					return err
-				}
-
-				// Skip directories
-				if info.IsDir() {
-					return nil
-				}
-
-				// Get relative path from local directory
-				relPath, err := filepath.Rel(localDir, path)
-				if err != nil {
-					return err
-				}
-
-				// Check if this file exists in S3
-				if !s3Files[relPath] {
-					fmt.Printf("Deleting %s (not in S3)\n", path)
-					if err := os.Remove(path); err != nil {
-						fmt.Fprintf(os.Stderr, "Failed to delete %s: %v\n", path, err)
-						return nil
-					}
-					deleted++
-				}
-
-				return nil
-			})
-
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error during deletion walk: %v\n", err)
-			}
 		}
 
 		// Print sync statistics
 		fmt.Printf("\n✓ Vault sync completed successfully to %s\n", localDir)
-		fmt.Printf("  Downloaded: %d files\n", downloaded)
-		fmt.Printf("  Skipped (up-to-date): %d files\n", skipped)
-		if deleted > 0 {
-			fmt.Printf("  Deleted: %d files\n", deleted)
+		fmt.Printf("  Downloaded: %d files\n", stats.Downloaded)
+		fmt.Printf("  Skipped (up-to-date): %d files\n", stats.Skipped)
+		if stats.Deleted > 0 {
+			fmt.Printf("  Deleted: %d files\n", stats.Deleted)
 		}
-		if failed > 0 {
-			fmt.Printf("  Failed: %d files\n", failed)
+		if stats.Failed > 0 {
+			fmt.Printf("  Failed: %d files\n", stats.Failed)
 		}
 
 		// Create tarball if requested
 		if createTar {
-			// Generate tarball filename from vault path and timestamp
 			vaultName := filepath.Base(strings.TrimSuffix(vaultPath, "/"))
-			timestamp := time.Now().Format("2006-01-02_15-04-05")
-			tarOutput := fmt.Sprintf("%s-%s.tar.gz", vaultName, timestamp)
 
-			fmt.Printf("Creating tarball at %s...\n", tarOutput)
-			if err := createTarball(localDir, tarOutput); err != nil {
+			// Create the tarball
+			outputDir, err := tar.CreateVaultTarball(localDir, vaultName, tarDir)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to create tarball: %v\n", err)
 				os.Exit(1)
 			}
 
-			// Get tarball size
-			tarInfo, err := os.Stat(tarOutput)
-			if err == nil {
-				sizeMB := float64(tarInfo.Size()) / (1024 * 1024)
-				fmt.Printf("✓ Tarball created successfully: %s (%.2f MB)\n", tarOutput, sizeMB)
-			} else {
-				fmt.Printf("✓ Tarball created successfully: %s\n", tarOutput)
+			// Clean up old tarballs if tar-keep is set
+			if err := tar.CleanupOldTarballs(outputDir, vaultName, tarKeep); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to cleanup old tarballs: %v\n", err)
 			}
 		}
 	},
@@ -320,6 +128,8 @@ func init() {
 	runCmd.Flags().StringP("vault-path", "v", "", "Path to the Obsidian vault in the S3 bucket")
 	runCmd.Flags().BoolP("tar", "t", false, "Create a tar.gz backup of the vault with auto-generated filename")
 	runCmd.Flags().BoolP("delete", "d", false, "Delete local files that don't exist in S3")
+	runCmd.Flags().String("tar-dir", "", "Directory to save tarballs (default: current directory)")
+	runCmd.Flags().Int("tar-keep", 5, "Number of tarballs to keep (deletes oldest, 0 = keep all)")
 
 	// Mark required flags
 	runCmd.MarkFlagRequired("bucket")
