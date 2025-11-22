@@ -93,7 +93,7 @@ var runCmd = &cobra.Command{
 		region, _ := cmd.Flags().GetString("region")
 		bucket, _ := cmd.Flags().GetString("bucket")
 		vaultPath, _ := cmd.Flags().GetString("vault-path")
-		tarOutput, _ := cmd.Flags().GetString("tar-output")
+		createTar, _ := cmd.Flags().GetBool("tar")
 
 		// Create context with 30 second timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -200,7 +200,12 @@ var runCmd = &cobra.Command{
 		fmt.Printf("✓ Vault sync completed successfully to %s\n", localDir)
 
 		// Create tarball if requested
-		if tarOutput != "" {
+		if createTar {
+			// Generate tarball filename from vault path and timestamp
+			vaultName := filepath.Base(strings.TrimSuffix(vaultPath, "/"))
+			timestamp := time.Now().Format("2006-01-02_15-04-05")
+			tarOutput := fmt.Sprintf("%s-%s.tar.gz", vaultName, timestamp)
+
 			fmt.Printf("Creating tarball at %s...\n", tarOutput)
 			if err := createTarball(localDir, tarOutput); err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to create tarball: %v\n", err)
@@ -226,7 +231,7 @@ func init() {
 	runCmd.Flags().StringP("region", "r", "us-east-1", "AWS region")
 	runCmd.Flags().StringP("bucket", "b", "", "AWS S3 bucket fecth vault from")
 	runCmd.Flags().StringP("vault-path", "v", "", "Path to the Obsidian vault in the S3 bucket")
-	runCmd.Flags().StringP("tar-output", "t", "", "Path to create a tar.gz backup of the vault (optional)")
+	runCmd.Flags().BoolP("tar", "t", false, "Create a tar.gz backup of the vault with auto-generated filename")
 
 	// Mark required flags
 	runCmd.MarkFlagRequired("bucket")
