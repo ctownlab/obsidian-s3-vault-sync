@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,7 +33,7 @@ func SyncVaultFromS3(ctx context.Context, s3Client *s3.Client, bucket, vaultPath
 		return nil, fmt.Errorf("failed to list objects: %w", err)
 	}
 
-	fmt.Printf("Found %d objects in S3\n", len(listResp.Contents))
+	slog.Debug("Listed S3 objects", "count", len(listResp.Contents))
 
 	// Track all S3 files (relative paths) for deletion check
 	s3Files := make(map[string]bool)
@@ -72,19 +73,23 @@ func SyncVaultFromS3(ctx context.Context, s3Client *s3.Client, bucket, vaultPath
 
 		// Create parent directories if needed
 		if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to create directory for %s: %v\n", localPath, err)
+			slog.Warn("Failed to create directory",
+				"path", localPath,
+				"error", err)
 			stats.Failed++
 			continue
 		}
 
 		// Download the file
-		fmt.Printf("Downloading %s -> %s\n", *obj.Key, localPath)
+		slog.Debug("Downloading file", "from", *obj.Key, "to", localPath)
 		result, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
 			Bucket: &bucket,
 			Key:    obj.Key,
 		})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to download %s: %v\n", *obj.Key, err)
+			slog.Warn("Failed to download from S3",
+				"key", *obj.Key,
+				"error", err)
 			stats.Failed++
 			continue
 		}
@@ -92,7 +97,9 @@ func SyncVaultFromS3(ctx context.Context, s3Client *s3.Client, bucket, vaultPath
 		// Create local file
 		file, err := os.Create(localPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to create file %s: %v\n", localPath, err)
+			slog.Warn("Failed to create local file",
+				"path", localPath,
+				"error", err)
 			result.Body.Close()
 			stats.Failed++
 			continue
@@ -104,7 +111,9 @@ func SyncVaultFromS3(ctx context.Context, s3Client *s3.Client, bucket, vaultPath
 		file.Close()
 
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to write file %s: %v\n", localPath, err)
+			slog.Warn("Failed to write file",
+				"path", localPath,
+				"error", err)
 			stats.Failed++
 			continue
 		}
@@ -119,7 +128,7 @@ func SyncVaultFromS3(ctx context.Context, s3Client *s3.Client, bucket, vaultPath
 
 	// Delete local files not in S3 if --delete flag is set
 	if deleteLocal {
-		fmt.Println("\nChecking for files to delete...")
+		slog.Debug("Checking for local files to delete")
 		err := filepath.Walk(localDir, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
@@ -138,9 +147,11 @@ func SyncVaultFromS3(ctx context.Context, s3Client *s3.Client, bucket, vaultPath
 
 			// Check if this file exists in S3
 			if !s3Files[relPath] {
-				fmt.Printf("Deleting %s (not in S3)\n", path)
+				slog.Debug("Deleting local file not in S3", "path", path)
 				if err := os.Remove(path); err != nil {
-					fmt.Fprintf(os.Stderr, "Failed to delete %s: %v\n", path, err)
+					slog.Warn("Failed to delete file",
+						"path", path,
+						"error", err)
 					return nil
 				}
 				stats.Deleted++
@@ -150,7 +161,7 @@ func SyncVaultFromS3(ctx context.Context, s3Client *s3.Client, bucket, vaultPath
 		})
 
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error during deletion walk: %v\n", err)
+			slog.Warn("Error during deletion walk", "error", err)
 		}
 	}
 

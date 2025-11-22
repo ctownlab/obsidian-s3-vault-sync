@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,8 +27,6 @@ var runCmd = &cobra.Command{
 	Short: "Run the vault sync",
 	Long:  `Sync your Obsidian vault from S3 to your local directory.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("Loading AWS configuration...")
-
 		// Get flags
 		awsProfile, _ := cmd.Flags().GetString("aws-profile")
 		region, _ := cmd.Flags().GetString("region")
@@ -39,6 +37,28 @@ var runCmd = &cobra.Command{
 		vaultDir, _ := cmd.Flags().GetString("vault-dir")
 		tarDir, _ := cmd.Flags().GetString("tar-dir")
 		tarKeep, _ := cmd.Flags().GetInt("tar-keep")
+		logLevel, _ := cmd.Flags().GetString("log-level")
+
+		// Setup logger
+		var level slog.Level
+		switch strings.ToLower(logLevel) {
+		case "debug":
+			level = slog.LevelDebug
+		case "info":
+			level = slog.LevelInfo
+		case "warn":
+			level = slog.LevelWarn
+		case "error":
+			level = slog.LevelError
+		default:
+			level = slog.LevelInfo
+		}
+		logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+		slog.SetDefault(logger)
+
+		slog.Info("Loading AWS configuration")
+
+		slog.Debug("DEBUG MODE ENABLED")
 
 		// Create context with 30 second timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -48,7 +68,7 @@ var runCmd = &cobra.Command{
 		var cfg aws.Config
 		var err error
 		if awsProfile != "" {
-			fmt.Printf("Using AWS profile: %s\n", awsProfile)
+			slog.Info("Using AWS profile", "profile", awsProfile)
 			cfg, err = config.LoadDefaultConfig(ctx,
 				config.WithSharedConfigProfile(awsProfile),
 				config.WithRegion(region),
@@ -60,19 +80,22 @@ var runCmd = &cobra.Command{
 		}
 
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to load AWS configuration: %v\n", err)
+			slog.Error("Failed to load AWS configuration", "error", err)
 			os.Exit(1)
 		}
 
 		// Create S3 client
 		s3Client := s3.NewFromConfig(cfg)
-		fmt.Printf("Successfully connected to AWS in region: %s\n", cfg.Region)
+		slog.Info("Successfully connected to AWS", "region", cfg.Region)
 
-		fmt.Printf("\nSyncing %d vault(s)...\n", len(vaultPaths))
+		slog.Info("Starting vault sync", "vault_count", len(vaultPaths))
 
 		// Sync each vault
 		for i, vaultPath := range vaultPaths {
-			fmt.Printf("\n[%d/%d] Processing vault: %s\n", i+1, len(vaultPaths), vaultPath)
+			slog.Info("Processing vault",
+				"vault", vaultPath,
+				"progress", i+1,
+				"total", len(vaultPaths))
 
 			// Ensure vaultPath doesn't start with / and ends with /
 			vaultPath = strings.TrimPrefix(vaultPath, "/")
@@ -80,7 +103,9 @@ var runCmd = &cobra.Command{
 				vaultPath += "/"
 			}
 
-			fmt.Printf("Syncing vault from s3://%s/%s\n", bucket, vaultPath)
+			slog.Info("Syncing vault from S3",
+				"bucket", bucket,
+				"path", vaultPath)
 
 			// Get vault name for directory
 			vaultName := filepath.Base(strings.TrimSuffix(vaultPath, "/"))
@@ -92,32 +117,33 @@ var runCmd = &cobra.Command{
 			}
 			localDir := filepath.Join(baseVaultDir, vaultName)
 			if err := os.MkdirAll(localDir, 0755); err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to create local directory: %v\n", err)
+				slog.Error("Failed to create local directory",
+					"directory", localDir,
+					"error", err)
 				continue
 			}
 
 			// Sync vault from S3
 			stats, err := s3sync.SyncVaultFromS3(ctx, s3Client, bucket, vaultPath, localDir, deleteLocal)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to sync vault: %v\n", err)
+				slog.Error("Failed to sync vault",
+					"vault", vaultPath,
+					"error", err)
 				continue
 			}
 
-			// Print sync statistics
-			fmt.Printf("\n✓ Vault sync completed successfully to %s\n", localDir)
-			fmt.Printf("  Downloaded: %d files\n", stats.Downloaded)
-			fmt.Printf("  Skipped (up-to-date): %d files\n", stats.Skipped)
-			if stats.Deleted > 0 {
-				fmt.Printf("  Deleted: %d files\n", stats.Deleted)
-			}
-			if stats.Failed > 0 {
-				fmt.Printf("  Failed: %d files\n", stats.Failed)
-			}
+			// Log sync statistics
+			slog.Info("Vault sync completed",
+				"vault", vaultName,
+				"directory", localDir,
+				"downloaded", stats.Downloaded,
+				"skipped", stats.Skipped,
+				"deleted", stats.Deleted,
+				"failed", stats.Failed)
 
 			// Create tarball if requested
 			if createTar {
-				// Create the tarball
-				fmt.Printf("Creating tarball for vault: %s\n", vaultName)
+				slog.Info("Creating tarball", "vault", vaultName)
 
 				// Determine tarball directory (vault-specific subdirectory)
 				var vaultTarDir string
@@ -129,18 +155,22 @@ var runCmd = &cobra.Command{
 
 				outputDir, err := tar.CreateVaultTarball(localDir, vaultName, vaultTarDir)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Failed to create tarball: %v\n", err)
+					slog.Error("Failed to create tarball",
+						"vault", vaultName,
+						"error", err)
 					continue
 				}
 
 				// Clean up old tarballs if tar-keep is set
 				if err := tar.CleanupOldTarballs(outputDir, vaultName, tarKeep); err != nil {
-					fmt.Fprintf(os.Stderr, "Failed to cleanup old tarballs: %v\n", err)
+					slog.Warn("Failed to cleanup old tarballs",
+						"vault", vaultName,
+						"error", err)
 				}
 			}
 		}
 
-		fmt.Println("\n✓ All vaults processed successfully!")
+		slog.Info("All vaults processed successfully")
 	},
 }
 
@@ -156,6 +186,7 @@ func init() {
 	runCmd.Flags().String("vault-dir", "", "Directory to save synced vaults (default: ./vault)")
 	runCmd.Flags().String("tar-dir", "", "Directory to save tarballs (default: current directory)")
 	runCmd.Flags().Int("tar-keep", 5, "Number of tarballs to keep (deletes oldest, 0 = keep all)")
+	runCmd.Flags().String("log-level", "info", "Log level (debug, info, warn, error)")
 
 	// Mark required flags
 	runCmd.MarkFlagRequired("bucket")
@@ -164,7 +195,7 @@ func init() {
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		slog.Error("Command execution failed", "error", err)
 		os.Exit(1)
 	}
 }

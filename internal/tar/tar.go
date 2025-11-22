@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -86,7 +87,7 @@ func CreateVaultTarball(localDir, vaultName, tarDir string) (string, error) {
 
 	tarOutput := filepath.Join(outputDir, tarFilename)
 
-	fmt.Printf("Creating tarball at %s...\n", tarOutput)
+	slog.Debug("Creating tarball", "path", tarOutput)
 	if err := createTarball(localDir, tarOutput); err != nil {
 		return "", fmt.Errorf("failed to create tarball: %w", err)
 	}
@@ -95,9 +96,11 @@ func CreateVaultTarball(localDir, vaultName, tarDir string) (string, error) {
 	tarInfo, err := os.Stat(tarOutput)
 	if err == nil {
 		sizeMB := float64(tarInfo.Size()) / (1024 * 1024)
-		fmt.Printf("✓ Tarball created successfully: %s (%.2f MB)\n", tarOutput, sizeMB)
+		slog.Info("Tarball created",
+			"path", tarOutput,
+			"size_mb", fmt.Sprintf("%.2f", sizeMB))
 	} else {
-		fmt.Printf("✓ Tarball created successfully: %s\n", tarOutput)
+		slog.Info("Tarball created", "path", tarOutput)
 	}
 
 	return outputDir, nil
@@ -109,7 +112,7 @@ func CleanupOldTarballs(outputDir, vaultName string, keepCount int) error {
 		return nil
 	}
 
-	fmt.Printf("Checking for old tarballs to clean up (keeping %d)...\n", keepCount)
+	slog.Debug("Checking for old tarballs to clean up", "keep_count", keepCount)
 
 	// Find all tarballs matching the pattern in the output directory
 	pattern := filepath.Join(outputDir, fmt.Sprintf("%s-*.tar.gz", vaultName))
@@ -148,12 +151,14 @@ func CleanupOldTarballs(outputDir, vaultName string, keepCount int) error {
 	// Delete oldest tarballs beyond keep count
 	deleteCount := len(tarballs) - keepCount
 	for i := 0; i < deleteCount; i++ {
-		fmt.Printf("Deleting old tarball: %s\n", tarballs[i].path)
+		slog.Debug("Deleting old tarball", "path", tarballs[i].path)
 		if err := os.Remove(tarballs[i].path); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to delete %s: %v\n", tarballs[i].path, err)
+			slog.Warn("Failed to delete tarball",
+				"path", tarballs[i].path,
+				"error", err)
 		}
 	}
-	fmt.Printf("✓ Cleaned up %d old tarball(s)\n", deleteCount)
+	slog.Info("Cleaned up old tarballs", "count", deleteCount)
 
 	return nil
 }
