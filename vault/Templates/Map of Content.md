@@ -1,3 +1,0 @@
-## Created: {{date}}
-
-1. 

@@ -8,6 +8,13 @@
 *.so
 *.dylib
 
+# Built binary (main application)
+vault-sync
+/cmd/vault-sync
+
+# Any binary without extension (Unix-style executables)
+/cmd/main
+
 # Test binary, built with `go test -c`
 *.test
 
@@ -30,3 +37,7 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Application-specific artifacts
+vault/              # Synced vault files
+*.tar.gz            # Tarball backups
