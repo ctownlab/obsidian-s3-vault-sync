@@ -32,9 +32,6 @@ RUN chmod +x /usr/local/bin/vault-sync
 ENV VAULT_DIR=/data/vaults
 ENV TAR_DIR=/data/tarballs
 
-# Set workdir but don't create /data (let volume mount handle it)
-WORKDIR /data
-
 ENTRYPOINT ["/usr/local/bin/vault-sync"]
 CMD ["run", "--help"]
 
