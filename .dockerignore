@@ -1,0 +1,27 @@
+# Git
+.git
+.gitignore
+
+# Build artifacts
+vault-sync
+*.tar.gz
+
+# Data directories
+vault/
+tars/
+test-dir/
+
+# Documentation
+README.md
+*.md
+
+# CI/CD
+.github/
+
+# IDE
+.vscode/
+.idea/
+
+# Test files
+*_test.go
+
