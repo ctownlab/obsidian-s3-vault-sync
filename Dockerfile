@@ -22,18 +22,22 @@ FROM alpine:latest
 # Install ca-certificates for HTTPS
 RUN apk --no-cache add ca-certificates tzdata
 
-WORKDIR /root/
+# Copy the binary from builder to /usr/local/bin
+COPY --from=builder /app/vault-sync /usr/local/bin/vault-sync
 
-# Copy the binary from builder
-COPY --from=builder /app/vault-sync .
+# Make binary executable
+RUN chmod +x /usr/local/bin/vault-sync
 
-# Create directories for vaults and tarballs
-RUN mkdir -p /data/vaults /data/tarballs
+# Create directories for vaults and tarballs with proper permissions
+RUN mkdir -p /data/vaults /data/tarballs && \
+    chmod -R 777 /data
 
 # Set default environment variables
 ENV VAULT_DIR=/data/vaults
 ENV TAR_DIR=/data/tarballs
 
-ENTRYPOINT ["./vault-sync"]
+WORKDIR /data
+
+ENTRYPOINT ["/usr/local/bin/vault-sync"]
 CMD ["run", "--help"]
 
