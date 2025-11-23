@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  # Example 1: Using command-line flags
+  vault-sync-flags:
+    image: ghcr.io/ctownlab/obsidian-s3-vault-sync:latest
+    volumes:
+      # Mount AWS credentials
+      - ~/.aws:/root/.aws:ro
+      # Mount data directory for vaults and tarballs
+      - ./data:/data
+    environment:
+      - TZ=America/New_York
+    command: >
+      run
+      --aws-profile obsidian
+      --region us-east-1
+      --bucket your-bucket-name
+      --vault-path obsidian/vault1
+      --vault-path obsidian/vault2
+      --vault-dir /data/vaults
+      --tar-dir /data/tarballs
+      --tar
+      --tar-keep 7
+      --delete
+      --log-level info
+
+  # Example 2: Using environment variables (recommended for Docker)
+  vault-sync-env:
+    image: ghcr.io/ctownlab/obsidian-s3-vault-sync:latest
+    volumes:
+      - ~/.aws:/root/.aws:ro
+      - ./data:/data
+    environment:
+      # Timezone
+      - TZ=America/New_York
+      # Vault Sync Configuration
+      - VAULT_SYNC_AWS_PROFILE=obsidian
+      - VAULT_SYNC_REGION=us-east-1
+      - VAULT_SYNC_BUCKET=your-bucket-name
+      - VAULT_SYNC_VAULT_PATH=obsidian/vault1,obsidian/vault2
+      - VAULT_SYNC_VAULT_DIR=/data/vaults
+      - VAULT_SYNC_TAR_DIR=/data/tarballs
+      - VAULT_SYNC_TAR=true
+      - VAULT_SYNC_TAR_KEEP=7
+      - VAULT_SYNC_DELETE=true
+      - VAULT_SYNC_LOG_LEVEL=info
+    command: run
+
+  # Example 3: Using .env file (create a .env file in the same directory)
+  vault-sync-env-file:
+    image: ghcr.io/ctownlab/obsidian-s3-vault-sync:latest
+    volumes:
+      - ~/.aws:/root/.aws:ro
+      - ./data:/data
+    env_file:
+      - .env  # Load environment variables from .env file
+    command: run
