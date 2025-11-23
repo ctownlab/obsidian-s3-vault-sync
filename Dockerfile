@@ -28,14 +28,11 @@ COPY --from=builder /app/vault-sync /usr/local/bin/vault-sync
 # Make binary executable
 RUN chmod +x /usr/local/bin/vault-sync
 
-# Create directories for vaults and tarballs with proper permissions
-RUN mkdir -p /data/vaults /data/tarballs && \
-    chmod -R 777 /data
-
 # Set default environment variables
 ENV VAULT_DIR=/data/vaults
 ENV TAR_DIR=/data/tarballs
 
+# Set workdir but don't create /data (let volume mount handle it)
 WORKDIR /data
 
 ENTRYPOINT ["/usr/local/bin/vault-sync"]
